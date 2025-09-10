@@ -8,6 +8,9 @@ from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from dotenv import load_dotenv
+import requests
+import base64
+import io
 
 def get_video_id(url):
     """Extract video ID from YouTube URL."""
@@ -33,6 +36,43 @@ def get_video_id(url):
     except:
         return None
 
+def text_to_speech_elevenlabs(text, voice_id="21m00Tcm4TlvDq8ikWAM"):
+    """Convert text to speech using ElevenLabs API."""
+    try:
+        # Get ElevenLabs API key from environment
+        elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
+        if not elevenlabs_api_key:
+            return None
+            
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": elevenlabs_api_key
+        }
+        
+        data = {
+            "text": text,
+            "model_id": "eleven_monolingual_v1",
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.5
+            }
+        }
+        
+        response = requests.post(url, json=data, headers=headers)
+        
+        if response.status_code == 200:
+            return response.content
+        else:
+            st.error(f"ElevenLabs API error: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        st.error(f"Error generating speech: {str(e)}")
+        return None
+
 def get_transcript(video_id):
     """Get transcript for a YouTube video."""
     import time
@@ -42,45 +82,24 @@ def get_transcript(video_id):
         # Add a small random delay to avoid rate limiting
         time.sleep(random.uniform(1, 3))
         
-        # First try to get any available transcript
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        
-        # Prefer English transcripts
-        preferred_languages = ['en', 'en-US', 'en-GB']
-        for lang in preferred_languages:
+        # Try to get transcript directly first
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US', 'en-GB'])
+            return ' '.join([t['text'] for t in transcript_list])
+        except Exception as e:
+            # If direct method fails, try alternative approach
             try:
-                transcript = transcript_list.find_transcript([lang])
-                transcript_data = transcript.fetch()
-                return ' '.join([t['text'] for t in transcript_data])
-            except Exception as e:
-                if "429" in str(e) or "Too Many Requests" in str(e):
-                    st.warning("YouTube is rate limiting requests. Trying again in a moment...")
-                    time.sleep(5)
-                    try:
-                        transcript_data = transcript.fetch()
-                        return ' '.join([t['text'] for t in transcript_data])
-                    except:
-                        continue
-                continue
-        
-        # If no preferred language found, try any available transcript
-        for transcript in transcript_list:
-            try:
-                transcript_data = transcript.fetch()
-                return ' '.join([t['text'] for t in transcript_data])
-            except Exception as e:
-                if "429" in str(e) or "Too Many Requests" in str(e):
-                    continue
-                continue
-                
-        st.error("YouTube is currently rate limiting transcript requests. Please try again in a few minutes, or try a different video.")
-        return None
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                return ' '.join([t['text'] for t in transcript_list])
+            except Exception as e2:
+                st.error("No transcripts available for this video. Please try a different video or use the manual transcript option.")
+                return None
         
     except Exception as e:
         if "429" in str(e) or "Too Many Requests" in str(e):
             st.error("YouTube is rate limiting transcript requests. Please wait a few minutes and try again.")
         else:
-            st.error(f"Error accessing transcripts: {str(e)}")
+            st.error(f"Error accessing transcripts: {str(e)}. Please use the manual transcript option.")
         return None
 
 def process_transcript(transcript, chunk_size=1000, chunk_overlap=200):
@@ -177,6 +196,12 @@ def main():
     else:
         st.info("OpenAI API key detected. Will try OpenAI first, then fallback to local model if quota exceeded.")
     
+    # Show ElevenLabs status
+    if os.getenv("ELEVENLABS_API_KEY"):
+        st.success("🔊 Voice readout enabled with ElevenLabs!")
+    else:
+        st.info("💡 Add ELEVENLABS_API_KEY to enable voice readout of responses.")
+    
     # Sidebar for video URL input
     with st.sidebar:
         st.header("YouTube Video")
@@ -260,6 +285,26 @@ def main():
                         response = st.session_state.qa_chain.run(prompt)
                         st.markdown(response)
                         st.session_state.messages.append({"role": "assistant", "content": response})
+                        
+                        # Add voice readout option
+                        col1, col2 = st.columns([1, 4])
+                        with col1:
+                            if st.button("🔊 Listen", key=f"voice_{len(st.session_state.messages)}"):
+                                with st.spinner("Generating voice..."):
+                                    audio_data = text_to_speech_elevenlabs(response)
+                                    if audio_data:
+                                        # Convert audio data to base64 for HTML audio player
+                                        audio_base64 = base64.b64encode(audio_data).decode()
+                                        audio_html = f"""
+                                        <audio controls autoplay>
+                                            <source src="data:audio/mpeg;base64,{audio_base64}" type="audio/mpeg">
+                                            Your browser does not support the audio element.
+                                        </audio>
+                                        """
+                                        st.markdown(audio_html, unsafe_allow_html=True)
+                                    else:
+                                        st.warning("Voice generation failed. Please add your ElevenLabs API key in the secrets.")
+                        
                     except Exception as e:
                         st.error(f"An error occurred: {str(e)}")
     else:
