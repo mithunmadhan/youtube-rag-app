@@ -36,13 +36,40 @@ def get_video_id(url):
     except:
         return None
 
-def text_to_speech_elevenlabs(text, voice_id="21m00Tcm4TlvDq8ikWAM"):
-    """Convert text to speech using ElevenLabs API."""
+def get_elevenlabs_voices():
+    """Get list of available voices from ElevenLabs API."""
+    try:
+        elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
+        if not elevenlabs_api_key:
+            return []
+            
+        url = "https://api.elevenlabs.io/v1/voices"
+        headers = {
+            "Accept": "application/json",
+            "xi-api-key": elevenlabs_api_key
+        }
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            voices = response.json().get("voices", [])
+            return [(voice["voice_id"], voice["name"]) for voice in voices]
+        else:
+            return []
+    except Exception as e:
+        st.error(f"Error fetching voices: {str(e)}")
+        return []
+
+def text_to_speech_elevenlabs(text, voice_id=None):
+    """Convert text to speech using ElevenLabs API with custom voice."""
     try:
         # Get ElevenLabs API key from environment
         elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
         if not elevenlabs_api_key:
             return None
+        
+        # Use default voice if none specified
+        if not voice_id:
+            voice_id = "qpY4eaUGeCWHEUIVdbGM"  # User's custom voice
             
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         
@@ -57,21 +84,87 @@ def text_to_speech_elevenlabs(text, voice_id="21m00Tcm4TlvDq8ikWAM"):
             "model_id": "eleven_monolingual_v1",
             "voice_settings": {
                 "stability": 0.5,
-                "similarity_boost": 0.5
+                "similarity_boost": 0.75,
+                "style": 0.0,
+                "use_speaker_boost": True
             }
         }
+        
+        # Debug: Log the request
+        print(f"Making TTS request to: {url}")
+        print(f"Using voice_id: {voice_id}")
+        print(f"Text length: {len(text)}")
         
         response = requests.post(url, json=data, headers=headers)
         
         if response.status_code == 200:
             return response.content
         else:
-            st.error(f"ElevenLabs API error: {response.status_code}")
+            st.error(f"ElevenLabs API error: {response.status_code} - {response.text}")
             return None
             
     except Exception as e:
         st.error(f"Error generating speech: {str(e)}")
         return None
+
+def upload_voice_sample():
+    """Upload voice sample to create custom voice clone."""
+    st.subheader("🎤 Voice Cloning Setup")
+    st.info("Upload audio samples of your voice to create a custom voice clone with ElevenLabs.")
+    
+    uploaded_files = st.file_uploader(
+        "Upload voice samples (MP3, WAV, M4A)",
+        type=['mp3', 'wav', 'm4a'],
+        accept_multiple_files=True,
+        help="Upload 1-25 audio files of your voice (each 1-30 minutes). Higher quality samples = better voice clone."
+    )
+    
+    voice_name = st.text_input("Voice Clone Name", placeholder="My Custom Voice")
+    voice_description = st.text_area("Voice Description", placeholder="Describe the voice characteristics...")
+    
+    if uploaded_files and voice_name and st.button("Create Voice Clone"):
+        try:
+            elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
+            if not elevenlabs_api_key:
+                st.error("ElevenLabs API key not found. Please add it to your secrets.")
+                return None
+                
+            url = "https://api.elevenlabs.io/v1/voices/add"
+            headers = {"xi-api-key": elevenlabs_api_key}
+            
+            files = []
+            for uploaded_file in uploaded_files:
+                files.append(('files', (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)))
+            
+            data = {
+                'name': voice_name,
+                'description': voice_description,
+                'labels': '{"accent": "american", "age": "young", "gender": "male"}'  # Adjust as needed
+            }
+            
+            # Debug: Show what we're sending
+            st.write(f"Creating voice with {len(uploaded_files)} files...")
+            st.write(f"Voice ID will be used: qpY4eaUGeCWHEUIVdbGM")
+            
+            with st.spinner("Creating voice clone... This may take a few minutes."):
+                response = requests.post(url, headers=headers, files=files, data=data)
+                
+            if response.status_code == 200:
+                result = response.json()
+                voice_id = result.get("voice_id")
+                st.success(f"✅ Voice clone '{voice_name}' created successfully!")
+                st.info(f"Voice ID: {voice_id}")
+                st.balloons()
+                return voice_id
+            else:
+                st.error(f"Failed to create voice clone: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            st.error(f"Error creating voice clone: {str(e)}")
+            return None
+    
+    return None
 
 def get_transcript(video_id):
     """Get transcript for a YouTube video."""
@@ -196,11 +289,38 @@ def main():
     else:
         st.info("OpenAI API key detected. Will try OpenAI first, then fallback to local model if quota exceeded.")
     
-    # Show ElevenLabs status
-    if os.getenv("ELEVENLABS_API_KEY"):
-        st.success("🔊 Voice readout enabled with ElevenLabs!")
+    # Show ElevenLabs status and voice selection
+    elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
+    if elevenlabs_api_key:
+        st.success("🔊 Voice cloning enabled with ElevenLabs!")
+        
+        # Voice selection in sidebar
+        with st.sidebar:
+            st.subheader("🎤 Voice Settings")
+            
+            # Get available voices
+            voices = get_elevenlabs_voices()
+            if voices:
+                voice_options = {name: voice_id for voice_id, name in voices}
+                selected_voice_name = st.selectbox(
+                    "Select Voice:",
+                    options=list(voice_options.keys()),
+                    help="Choose your custom voice or a preset voice"
+                )
+                selected_voice_id = voice_options.get(selected_voice_name)
+                
+                # Store selected voice in session state
+                st.session_state.selected_voice_id = selected_voice_id
+                st.info(f"Using voice: {selected_voice_name}")
+            else:
+                st.warning("No voices found. Create a voice clone below.")
+                st.session_state.selected_voice_id = None
+            
+            # Voice cloning section
+            st.markdown("---")
+            upload_voice_sample()
     else:
-        st.info("💡 Add ELEVENLABS_API_KEY to enable voice readout of responses.")
+        st.info("💡 Add ELEVENLABS_API_KEY to enable voice cloning with your own voice.")
     
     # Sidebar for video URL input
     with st.sidebar:
@@ -286,12 +406,14 @@ def main():
                         st.markdown(response)
                         st.session_state.messages.append({"role": "assistant", "content": response})
                         
-                        # Add voice readout option
+                        # Add voice readout option with ElevenLabs
                         col1, col2 = st.columns([1, 4])
                         with col1:
                             if st.button("🔊 Listen", key=f"voice_{len(st.session_state.messages)}"):
-                                with st.spinner("Generating voice..."):
-                                    audio_data = text_to_speech_elevenlabs(response)
+                                with st.spinner("Generating voice with your custom voice..."):
+                                    # Use selected voice or user's custom voice
+                                    voice_id = getattr(st.session_state, 'selected_voice_id', "qpY4eaUGeCWHEUIVdbGM")
+                                    audio_data = text_to_speech_elevenlabs(response, voice_id)
                                     if audio_data:
                                         # Convert audio data to base64 for HTML audio player
                                         audio_base64 = base64.b64encode(audio_data).decode()
@@ -303,7 +425,7 @@ def main():
                                         """
                                         st.markdown(audio_html, unsafe_allow_html=True)
                                     else:
-                                        st.warning("Voice generation failed. Please add your ElevenLabs API key in the secrets.")
+                                        st.warning("Voice generation failed. Please check your ElevenLabs API key and voice selection.")
                         
                     except Exception as e:
                         st.error(f"An error occurred: {str(e)}")
@@ -312,3 +434,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
