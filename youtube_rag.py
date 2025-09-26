@@ -117,13 +117,8 @@ def split_text_into_chunks(transcript, chunk_size=1500, chunk_overlap=300):
     return text_splitter.split_text(transcript)
 
 def create_vector_store(chunks):
-    """Create a FAISS vector store from text chunks with better embeddings."""
-    # Use a better embedding model for more accurate semantic search
-    embeddings = HuggingFaceEmbeddings(
-        model_name='sentence-transformers/all-mpnet-base-v2',
-        model_kwargs={'device': 'cpu'},
-        encode_kwargs={'normalize_embeddings': True}
-    )
+    """Create a FAISS vector store from text chunks."""
+    embeddings = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
     return FAISS.from_texts(chunks, embeddings)
 
 def create_qa_chain(vector_store):
