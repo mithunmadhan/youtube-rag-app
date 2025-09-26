@@ -106,18 +106,24 @@ def get_transcript(video_id):
             st.error(f"Error accessing transcripts: {str(e)}. Please use the manual transcript option.")
         return None
 
-def process_transcript(transcript, chunk_size=1000, chunk_overlap=200):
-    """Split transcript into chunks for processing."""
+def split_text_into_chunks(transcript, chunk_size=1500, chunk_overlap=300):
+    """Split transcript into larger, overlapping chunks for better context."""
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        length_function=len
+        length_function=len,
+        separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""]
     )
     return text_splitter.split_text(transcript)
 
 def create_vector_store(chunks):
-    """Create a FAISS vector store from text chunks."""
-    embeddings = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
+    """Create a FAISS vector store from text chunks with better embeddings."""
+    # Use a better embedding model for more accurate semantic search
+    embeddings = HuggingFaceEmbeddings(
+        model_name='sentence-transformers/all-mpnet-base-v2',
+        model_kwargs={'device': 'cpu'},
+        encode_kwargs={'normalize_embeddings': True}
+    )
     return FAISS.from_texts(chunks, embeddings)
 
 def create_qa_chain(vector_store):
@@ -136,19 +142,26 @@ def create_qa_chain(vector_store):
                 llm=llm,
                 chain_type="stuff",
                 retriever=vector_store.as_retriever(
-                    search_type="similarity",
-                    search_kwargs={"k": 5}  # Get more context chunks
+                    search_type="mmr",  # Maximum Marginal Relevance for better diversity
+                    search_kwargs={"k": 8, "fetch_k": 20}  # Get more diverse context
                 ),
                 return_source_documents=False,
                 chain_type_kwargs={
-                    "prompt": """Use the following context to answer the question accurately and concisely. 
-                    If you cannot find the answer in the context, say "I cannot find this information in the video transcript."
-                    
-                    Context: {context}
-                    
-                    Question: {question}
-                    
-                    Answer:"""
+                    "prompt": """You are answering questions about a YouTube video transcript. Use ONLY the provided context to answer questions accurately and in detail.
+
+IMPORTANT RULES:
+1. Base your answer ONLY on the transcript context provided
+2. Quote specific parts of the transcript when relevant
+3. If the answer isn't in the context, say "This information is not discussed in the video"
+4. Be specific and detailed in your answers
+5. Don't make assumptions beyond what's stated in the transcript
+
+Context from video transcript:
+{context}
+
+Question: {question}
+
+Detailed Answer:"""
                 }
             )
             return qa_chain
