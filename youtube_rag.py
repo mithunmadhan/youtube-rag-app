@@ -116,6 +116,10 @@ def split_text_into_chunks(transcript, chunk_size=1500, chunk_overlap=300):
     )
     return text_splitter.split_text(transcript)
 
+def process_transcript(transcript):
+    """Process transcript into chunks for vector store."""
+    return split_text_into_chunks(transcript)
+
 def create_vector_store(chunks):
     """Create a FAISS vector store from text chunks."""
     embeddings = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
